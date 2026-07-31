@@ -4,3 +4,4 @@ hopsworks
 python-dotenv
 scikit-learn
 joblib
+pyarrow
