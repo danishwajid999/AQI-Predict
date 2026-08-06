@@ -61,6 +61,15 @@ def add_trend_features(df):
     df["aqi_lag_48h"] = df["aqi"].shift(48)
     df["aqi_rolling_6h"] = df["aqi"].rolling(window=6).mean()
     df["aqi_rolling_24h"] = df["aqi"].rolling(window=24).mean()
+
+    # Live rows (AQICN) only measure PM2.5 -- o3/no2/so2/co are always
+    # missing. Fill them instead of letting dropna() silently exclude
+    # every live row from training, which would make the model only
+    # ever learn from backfilled data and never see what live inputs
+    # actually look like.
+    for col in ["o3", "no2", "so2", "co", "pm10"]:
+        df[col] = df[col].fillna(0)
+
     return df
 
 
