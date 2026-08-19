@@ -12,6 +12,7 @@ import os
 
 import joblib
 import pandas as pd
+import shap
 import streamlit as st
 import hopsworks
 from dotenv import load_dotenv
@@ -101,6 +102,27 @@ def load_models(_project):
     return models
 
 
+def compute_shap_explanation(model, X_row, background_df):
+    """
+    Breaks down a single prediction into how much each feature pushed it
+    up or down. Works for both tree models (Random Forest) and linear
+    models (Ridge) -- shap.Explainer automatically picks the right
+    algorithm for each.
+    """
+    try:
+        explainer = shap.Explainer(model, background_df)
+        shap_values = explainer(X_row)
+    except Exception:
+        # Fallback for model types the fast path doesn't support directly
+        explainer = shap.Explainer(model.predict, background_df)
+        shap_values = explainer(X_row)
+
+    values = shap_values.values[0]
+    result = pd.DataFrame({"feature": FEATURE_COLUMNS, "impact": values})
+    result["abs_impact"] = result["impact"].abs()
+    return result.sort_values("abs_impact", ascending=False).head(6)
+
+
 def main():
     st.set_page_config(page_title="Pearls AQI Predictor - Islamabad", page_icon="🌫️", layout="wide")
     st.title("🌫️ Pearls AQI Predictor")
@@ -153,6 +175,25 @@ def main():
                 f"<span style='font-size:32px; font-weight:bold;'>{prediction:.0f}</span><br>"
                 f"{category}</div>",
                 unsafe_allow_html=True,
+            )
+
+    st.divider()
+
+    # --- SHAP explanations: why did the model predict this? ---
+    st.subheader("Why these predictions? (SHAP feature importance)")
+    background_sample = df[FEATURE_COLUMNS].dropna().sample(
+        n=min(50, len(df.dropna(subset=FEATURE_COLUMNS))), random_state=42
+    )
+
+    for label, model in models.items():
+        with st.expander(f"{label} -- what drove this prediction?"):
+            with st.spinner("Computing SHAP values..."):
+                explanation = compute_shap_explanation(model, X_latest, background_sample)
+            explanation_display = explanation.set_index("feature")["impact"]
+            st.bar_chart(explanation_display)
+            st.caption(
+                "Positive bars pushed the predicted AQI up; negative bars pulled it down. "
+                "Only the top 6 most influential features are shown."
             )
 
     st.divider()
