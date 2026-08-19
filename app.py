@@ -19,8 +19,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-HOPSWORKS_API_KEY = os.getenv("HOPSWORKS_API_KEY")
-HOPSWORKS_PROJECT = os.getenv("HOPSWORKS_PROJECT")
+
+def get_secret(name):
+    """Reads a credential from Streamlit Cloud's secrets manager if available,
+    otherwise falls back to a local .env file (for local development)."""
+    if name in st.secrets:
+        return st.secrets[name]
+    return os.getenv(name)
+
+
+HOPSWORKS_API_KEY = get_secret("HOPSWORKS_API_KEY")
+HOPSWORKS_PROJECT = get_secret("HOPSWORKS_PROJECT")
 
 FEATURE_GROUP_NAME = "aqi_features"
 FEATURE_GROUP_VERSION = 1
@@ -40,19 +49,19 @@ DAY_MODELS = {
 
 
 def aqi_category(aqi):
-    """Standard EPA AQI category + color, used for both display and alerts."""
+    """Standard EPA AQI category + background color + a readable text color for it."""
     if aqi <= 50:
-        return "Good", "#00e400"
+        return "Good", "#00e400", "#003d00"
     elif aqi <= 100:
-        return "Moderate", "#ffff00"
+        return "Moderate", "#ffff00", "#4d4d00"
     elif aqi <= 150:
-        return "Unhealthy for Sensitive Groups", "#ff7e00"
+        return "Unhealthy for Sensitive Groups", "#ff7e00", "#ffffff"
     elif aqi <= 200:
-        return "Unhealthy", "#ff0000"
+        return "Unhealthy", "#ff0000", "#ffffff"
     elif aqi <= 300:
-        return "Very Unhealthy", "#8f3f97"
+        return "Very Unhealthy", "#8f3f97", "#ffffff"
     else:
-        return "Hazardous", "#7e0023"
+        return "Hazardous", "#7e0023", "#ffffff"
 
 
 @st.cache_resource
@@ -66,7 +75,7 @@ def connect():
     return project
 
 
-@st.cache_data(ttl=600)  # re-fetch at most every 10 minutes
+@st.cache_data(ttl=3600)  # re-fetch at most once an hour, since underlying data only updates every 3 hours now
 def load_latest_features(_project):
     """Pulls all feature rows and engineers the same trend features used in training."""
     fs = _project.get_feature_store()
@@ -139,7 +148,7 @@ def main():
     X_latest = pd.DataFrame([latest[FEATURE_COLUMNS]])
 
     current_aqi = latest["aqi"]
-    current_category, current_color = aqi_category(current_aqi)
+    current_category, current_color, current_text_color = aqi_category(current_aqi)
 
     # --- Current conditions ---
     st.subheader("Current Conditions")
@@ -150,7 +159,7 @@ def main():
 
     st.markdown(
         f"<div style='background-color:{current_color}; padding:10px; "
-        f"border-radius:8px; text-align:center; font-weight:bold;'>"
+        f"border-radius:8px; text-align:center; font-weight:bold; color:{current_text_color};'>"
         f"{current_category}</div>",
         unsafe_allow_html=True,
     )
@@ -165,13 +174,13 @@ def main():
     for i, (label, model) in enumerate(models.items()):
         prediction = model.predict(X_latest)[0]
         forecast_values.append(prediction)
-        category, color = aqi_category(prediction)
+        category, color, text_color = aqi_category(prediction)
 
         with cols[i]:
             st.markdown(f"**{label}**")
             st.markdown(
                 f"<div style='background-color:{color}; padding:20px; "
-                f"border-radius:8px; text-align:center;'>"
+                f"border-radius:8px; text-align:center; color:{text_color};'>"
                 f"<span style='font-size:32px; font-weight:bold;'>{prediction:.0f}</span><br>"
                 f"{category}</div>",
                 unsafe_allow_html=True,
