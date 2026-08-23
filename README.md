@@ -4,7 +4,7 @@ An end-to-end, serverless machine learning system that forecasts the Air Quality
 
 **Live dashboard:** https://danishwajid999-aqi-predict-app-atjs2t.streamlit.app/
 
-**[Read the full project report](./Pearls_AQI_Predictor_Final_Report.docx)** for architecture details, model evaluation, EDA findings, and a full account of the engineering challenges solved along the way.
+**[Read the full project report](./Pearls_AQI_Predictor_Final_Report.pdf)** for architecture details, model evaluation, EDA findings, and a full account of the engineering challenges solved along the way.
 
 ## What it does
 
@@ -35,7 +35,7 @@ Backfill (backfill_pipeline.py)          Training Pipeline (training_pipeline.py
 
 Both the feature pipeline and training pipeline run automatically on a schedule via GitHub Actions (see `.github/workflows/`).
 
-> **Note on automation status:** Both workflows have been fully built and verified working on their own schedules (see the Actions run history in this repo, and Section 8 of the [final report](./Pearls_AQI_Predictor_Final_Report.docx)). They are intentionally left disabled between demos to stay within Hopsworks' free-tier compute budget, and can be re-enabled with a single click from the repo's Actions tab. The trained models and dashboard remain fully functional while automation is paused; only the live "current conditions" reading may not reflect the most recent hour.
+> **Note on automation status:** Both workflows have been fully built and verified working on their own schedules (see the Actions run history in this repo, and Section 8 of the [final report](./Pearls_AQI_Predictor_Final_Report.pdf)). They are intentionally left disabled between demos to stay within Hopsworks' free-tier compute budget, and can be re-enabled with a single click from the repo's Actions tab. The trained models and dashboard remain fully functional while automation is paused; only the live "current conditions" reading may not reflect the most recent hour.
 
 ## Project structure
 
@@ -80,4 +80,4 @@ Python 3.11, scikit-learn, Hopsworks (Feature Store + Model Registry), Streamlit
 - Day-3 forecast accuracy is meaningfully weaker than Day-1, since only current-moment weather is available as input (a production system would use an actual multi-day weather forecast as a feature).
 - Only Ridge Regression and Random Forest were evaluated; a deep learning model was not implemented within the project's time/compute budget.
 
-Full details, honest metrics, and the debugging story (a dead monitoring station, dependency conflicts, a train/serve skew bug, and a free-tier compute budget cap) are documented in the [final report](./Pearls_AQI_Predictor_Final_Report.docx).
+Full details, honest metrics, and the debugging story (a dead monitoring station, dependency conflicts, a train/serve skew bug, and a free-tier compute budget cap) are documented in the [final report](./Pearls_AQI_Predictor_Final_Report.pdf).
