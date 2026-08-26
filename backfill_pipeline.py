@@ -1,15 +1,12 @@
 """
-Backfill Pipeline for Pearls AQI Predictor
-============================================
+Backfill Pipeline 
 AQICN (our live data source) doesn't provide historical data on the free
-tier. This script uses Open-Meteo instead -- a free API with a genuine
-historical archive, no API key required -- to pull the past 90 days of
+tier. This script uses Open-Meteo instead, a free API with a genuine
+historical archive, no API key required, to pull the past 90 days of
 hourly air quality + weather data for Islamabad, engineer the same
 features as our live pipeline, and bulk-insert them into the Feature
 Store in one go.
 
-Run this ONCE to seed your training data. You don't need to run it again
-unless you want to extend the history further back later.
 """
 
 import os
@@ -29,8 +26,7 @@ CITY = "islamabad"
 LATITUDE = 33.6844
 LONGITUDE = 73.0479
 DAYS_BACK = 90
-END_BUFFER_DAYS = 3  # weather archive needs a few days to finalize data; leave this gap for the live pipeline to cover
-
+END_BUFFER_DAYS = 3 
 FEATURE_GROUP_NAME = "aqi_features"
 FEATURE_GROUP_VERSION = 1
 
@@ -60,8 +56,7 @@ def calculate_aqi_from_pm25(pm25):
             return round(
                 (aqi_hi - aqi_lo) / (c_hi - c_lo) * (pm25 - c_lo) + aqi_lo
             )
-    return 500  # cap at max if pm25 is off the charts
-
+    return 500  
 
 def fetch_air_quality_history(start_date, end_date):
     """Pulls hourly pollutant history from Open-Meteo's Air Quality API."""
@@ -125,11 +120,10 @@ def build_feature_dataframe(air_df, weather_df):
     df["month"] = df["date"].dt.month
     df["day_of_week"] = df["date"].dt.dayofweek
 
-    # Sort chronologically so change-rate is calculated correctly
     df = df.sort_values("date").reset_index(drop=True)
     df["aqi_change_rate"] = df["aqi"].diff().fillna(0.0)
 
-    # Drop rows where AQI couldn't be calculated (missing PM2.5 reading)
+   
     df = df.dropna(subset=["aqi"])
 
     numeric_cols = [

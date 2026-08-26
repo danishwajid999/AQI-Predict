@@ -1,12 +1,8 @@
 """
-EDA (Exploratory Data Analysis) for Pearls AQI Predictor
-============================================================
+EDA (Exploratory Data Analysis)
 Fetches your feature data from Hopsworks ONCE, saves it locally as a
 CSV, then does all analysis on that local file -- no repeated Hopsworks
 calls, so this doesn't eat into your compute budget beyond one read.
-
-If you run this again later, it will reuse the saved CSV instead of
-re-fetching, unless you delete aqi_eda_data.csv first.
 
 Run with: python eda.py
 Output: a set of PNG charts in the 'eda_output' folder, plus printed

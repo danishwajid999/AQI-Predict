@@ -1,7 +1,5 @@
 """
-Training Pipeline for Pearls AQI Predictor
-=============================================
-This script:
+Training Pipeline 
   1. Pulls all features out of the Hopsworks Feature Store
   2. Builds the actual forecasting target: AQI 72 hours (3 days) into the future
   3. Splits data by TIME (not randomly) -- train on older data, test on newer
@@ -30,7 +28,7 @@ HOPSWORKS_PROJECT = os.getenv("HOPSWORKS_PROJECT")
 FEATURE_GROUP_NAME = "aqi_features"
 FEATURE_GROUP_VERSION = 1
 
-FORECAST_HORIZON_HOURS = 72  # predicting AQI 3 days ahead. Try changing this to 24 to test a shorter, easier horizon.
+FORECAST_HORIZON_HOURS = 72  
 
 FEATURE_COLUMNS = [
     "aqi", "pm25", "pm10", "o3", "no2", "so2", "co",
@@ -62,11 +60,6 @@ def add_trend_features(df):
     df["aqi_rolling_6h"] = df["aqi"].rolling(window=6).mean()
     df["aqi_rolling_24h"] = df["aqi"].rolling(window=24).mean()
 
-    # Live rows (AQICN) only measure PM2.5 -- o3/no2/so2/co are always
-    # missing. Fill them instead of letting dropna() silently exclude
-    # every live row from training, which would make the model only
-    # ever learn from backfilled data and never see what live inputs
-    # actually look like.
     for col in ["o3", "no2", "so2", "co", "pm10"]:
         df[col] = df[col].fillna(0)
 

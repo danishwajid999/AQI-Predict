@@ -1,12 +1,9 @@
 """
-Feature Pipeline for Pearls AQI Predictor
-==========================================
+Feature Pipeline:
 This script does 3 things every time it runs:
   1. Fetches the current AQI + weather reading for Islamabad from AQICN
   2. Engineers features from that raw reading
   3. Writes the feature row into a Hopsworks Feature Group
-
-Run this manually for now. Later, GitHub Actions will run it automatically every hour.
 """
 
 import os
@@ -22,15 +19,12 @@ load_dotenv()
 AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 HOPSWORKS_API_KEY = os.getenv("HOPSWORKS_API_KEY")
 HOPSWORKS_PROJECT = os.getenv("HOPSWORKS_PROJECT")
-CITY = "islamabad"  # used only as a label for our own records
-# Islamabad coordinates. AQICN's geo endpoint automatically finds the
-# nearest ACTIVE reporting station -- far more reliable than guessing
-# a station ID from a webpage.
+CITY = "islamabad"  
 LATITUDE = 33.6844
 LONGITUDE = 73.0479
 
 FEATURE_GROUP_NAME = "aqi_features"
-FEATURE_GROUP_VERSION = 1  # clean restart -- old v1/v2/v3 deleted from Hopsworks
+FEATURE_GROUP_VERSION = 1
 
 
 def fetch_raw_data():
@@ -44,14 +38,12 @@ def fetch_raw_data():
 
     d = data["data"]
 
-    # Sanity check: if the station has no actual AQI value, something's
-    # still wrong (e.g. bad coordinates) -- fail loudly instead of
-    # silently inserting a row full of Nones.
+
     if d.get("aqi") is None:
         raise RuntimeError(f"AQICN returned no usable data: {data}")
-    iaqi = d.get("iaqi", {})  # individual pollutant/weather readings
+    iaqi = d.get("iaqi", {}) 
 
-    # Helper to safely pull a value if it exists, else None
+
     def get_val(key):
         return iaqi.get(key, {}).get("v")
 
@@ -81,7 +73,7 @@ def engineer_features(raw, previous_aqi=None):
 
     return {
         "city": CITY,
-        "date": now,  # used as the event-time column in the feature group
+        "date": now,  
         "aqi": raw["aqi"],
         "pm25": raw["pm25"],
         "pm10": raw["pm10"],
@@ -96,7 +88,7 @@ def engineer_features(raw, previous_aqi=None):
         "hour": now.hour,
         "day": now.day,
         "month": now.month,
-        "day_of_week": now.weekday(),  # 0 = Monday, 6 = Sunday
+        "day_of_week": now.weekday(), 
         "aqi_change_rate": aqi_change_rate,
     }
 
@@ -110,7 +102,7 @@ def get_previous_aqi(fg):
         df = df.sort_values("date", ascending=False)
         return float(df.iloc[0]["aqi"])
     except Exception:
-        # Feature group might be empty or brand new
+
         return None
 
 
@@ -124,8 +116,6 @@ def main():
     )
     fs = project.get_feature_store()
 
-    # get_or_create_feature_group makes it the first time, and just connects
-    # to it on every future run
     fg = fs.get_or_create_feature_group(
         name=FEATURE_GROUP_NAME,
         version=FEATURE_GROUP_VERSION,
@@ -148,10 +138,6 @@ def main():
 
     df = pd.DataFrame([features])
 
-    # Some pollutants (e.g. pm10, o3) may come back as None if the station
-    # doesn't measure them. Force these columns to be proper floats (with
-    # NaN for missing) so Hopsworks can infer a numeric type instead of
-    # rejecting an ambiguous all-None column.
     numeric_cols = [
         "aqi", "pm25", "pm10", "o3", "no2", "so2", "co",
         "temperature", "humidity", "pressure", "wind",
