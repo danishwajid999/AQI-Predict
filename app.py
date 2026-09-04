@@ -29,7 +29,7 @@ def get_secret(name):
         if name in st.secrets:
             return st.secrets[name]
     except Exception:
-        pass  # no secrets.toml present (e.g. running locally) -- fall back to .env
+        pass
 
     return os.getenv(name)
 
@@ -72,7 +72,8 @@ DAY_MODELS = {
 
 
 def aqi_category(aqi):
-    """Standard EPA AQI category + background color + a readable text color for it."""
+    """Standard EPA AQI category + background color + readable text color."""
+
     if aqi <= 50:
         return "Good", "#00e400", "#003d00"
 
@@ -107,6 +108,7 @@ def connect():
 @st.cache_data(ttl=3600)
 def load_latest_features(_project):
     """Pulls all feature rows and engineers the same trend features used in training."""
+
     fs = _project.get_feature_store()
 
     fg = fs.get_feature_group(
@@ -123,18 +125,12 @@ def load_latest_features(_project):
     df["aqi_rolling_6h"] = df["aqi"].rolling(window=6).mean()
     df["aqi_rolling_24h"] = df["aqi"].rolling(window=24).mean()
 
-    # NOTE: pollutant NaNs (o3/no2/so2/co, missing on live-only rows) are
-    # deliberately NOT filled here -- we keep the real missing-vs-recorded
-    # distinction for display, and only fill with 0 later, right before
-    # feeding a specific row into a model for prediction.
-
     return df
 
 
 @st.cache_resource
 def load_models(_project):
-    """Downloads and loads all 3 day-ahead models, plus their saved metadata
-    (which algorithm won, and its real evaluation metrics) from training time."""
+    """Downloads and loads all 3 day-ahead models."""
 
     mr = _project.get_model_registry()
 
@@ -168,9 +164,7 @@ def load_models(_project):
 def compute_shap_explanation(model, X_row, background_df):
     """
     Breaks down a single prediction into how much each feature pushed it
-    up or down. Works for both tree models (Random Forest) and linear
-    models (Ridge) -- shap.Explainer automatically picks the right
-    algorithm for each.
+    up or down.
     """
 
     try:
@@ -183,7 +177,6 @@ def compute_shap_explanation(model, X_row, background_df):
 
     except Exception:
 
-        # Fallback for model types the fast path doesn't support directly
         explainer = shap.Explainer(
             model.predict,
             background_df
@@ -207,74 +200,54 @@ def compute_shap_explanation(model, X_row, background_df):
         ascending=False
     ).head(6)
 
+
 def render_aqi_gauge(aqi_value):
-    """Builds a compact gauge meter for the current AQI."""
+    """Builds an unclipped, proportional gauge meter supporting dynamic light/dark themes."""
 
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
             value=aqi_value,
-
+            domain={"x": [0, 1], "y": [0, 1]},
             number={
                 "suffix": " AQI",
                 "font": {
-                    "size": 30
+                    "size": 22
                 }
             },
-
             gauge={
                 "axis": {
                     "range": [0, 500],
+                    "tickmode": "array",
+                    "tickvals": [0, 100, 200, 300, 400, 500],
+                    "ticktext": ["0", "100", "200", "300", "400", "500"],
                     "tickwidth": 1,
                     "tickfont": {
-                        "size": 9
+                        "size": 10
                     }
                 },
-
                 "bar": {
                     "color": "black",
-                    "thickness": 0.25
+                    "thickness": 0.22
                 },
-
                 "steps": [
-                    {
-                        "range": [0, 50],
-                        "color": "#00e400"
-                    },
-                    {
-                        "range": [50, 100],
-                        "color": "#ffff00"
-                    },
-                    {
-                        "range": [100, 150],
-                        "color": "#ff7e00"
-                    },
-                    {
-                        "range": [150, 200],
-                        "color": "#ff0000"
-                    },
-                    {
-                        "range": [200, 300],
-                        "color": "#8f3f97"
-                    },
-                    {
-                        "range": [300, 500],
-                        "color": "#7e0023"
-                    },
+                    {"range": [0, 50], "color": "#00e400"},
+                    {"range": [50, 100], "color": "#ffff00"},
+                    {"range": [100, 150], "color": "#ff7e00"},
+                    {"range": [150, 200], "color": "#ff0000"},
+                    {"range": [200, 300], "color": "#8f3f97"},
+                    {"range": [300, 500], "color": "#7e0023"},
                 ],
             },
         )
     )
 
-    # Extra space around the gauge so ALL labels are visible
     fig.update_layout(
-        height=190,
-        margin=dict(
-            l=10,
-            r=10,
-            t=25,
-            b=15
-        )
+        height=145,
+        margin=dict(l=15, r=15, t=25, b=15),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        autosize=True
     )
 
     return fig
@@ -301,10 +274,6 @@ def main():
         df = load_latest_features(project)
         models, model_info = load_models(project)
 
-    # Columns that are ALWAYS present, live or backfilled -- used to find
-    # the true latest row without pollutant NaNs (o3/no2/so2/co) causing
-    # live rows to be silently skipped.
-
     essential_cols = [
         "aqi",
         "pm25",
@@ -326,10 +295,6 @@ def main():
     latest = df.dropna(
         subset=essential_cols
     ).iloc[-1]
-
-    # Build the model input separately: fill missing pollutants with 0
-    # only here, right before prediction -- the display below still uses
-    # the real (possibly missing) values from `latest`.
 
     model_input = latest[FEATURE_COLUMNS].copy()
 
@@ -354,50 +319,58 @@ def main():
     # ==========================================================
 
     st.subheader("Current Conditions")
-
-    # Four columns instead of three.
-    #
-    # Current AQI | Gauge | Temperature | Humidity
-    #
-    # The gauge is now beside the Current AQI metric.
-
-    col1, col2, col3, col4 = st.columns(
-        [1, 1.4, 1, 1]
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMetric"] {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+        div[data-testid="stMetric"] > div {
+            text-align: center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
     )
 
-    with col1:
+    col_aqi, col_temp, col_hum = st.columns([2, 1, 1], vertical_alignment="center")
 
-        st.metric(
-            "Current AQI",
-            f"{current_aqi:.0f}",
-            current_category
-        )
+    with col_aqi:
+        with st.container(border=True):
+            sub_metric, sub_gauge = st.columns([1, 1.2], vertical_alignment="center")
 
-    with col2:
+            with sub_metric:
+                st.metric(
+                    "Current AQI",
+                    f"{current_aqi:.0f}",
+                    current_category
+                )
 
-        st.plotly_chart(
-            render_aqi_gauge(current_aqi),
-            use_container_width=True,
-            config={
-                "displayModeBar": False
-            }
-        )
+            with sub_gauge:
+                st.plotly_chart(
+                    render_aqi_gauge(current_aqi),
+                    use_container_width=True,
+                    theme="streamlit",
+                    config={"displayModeBar": False}
+                )
 
-    with col3:
+    with col_temp:
+        with st.container(border=True):
+            st.metric(
+                "Temperature",
+                f"{latest['temperature']:.0f} °C"
+            )
 
-        st.metric(
-            "Temperature",
-            f"{latest['temperature']:.0f} C"
-        )
-
-    with col4:
-
-        st.metric(
-            "Humidity",
-            f"{latest['humidity']:.0f}%"
-        )
-
-    # AQI category banner
+    with col_hum:
+        with st.container(border=True):
+            st.metric(
+                "Humidity",
+                f"{latest['humidity']:.0f}%"
+            )
 
     st.markdown(
         f"""
@@ -408,6 +381,7 @@ def main():
             text-align:center;
             font-weight:bold;
             color:{current_text_color};
+            margin-top: 10px;
         '>
             {current_category}
         </div>
@@ -422,7 +396,6 @@ def main():
     st.subheader("Pollutant Levels")
 
     def fmt_pollutant(value):
-
         return (
             f"{value:.0f}"
             if pd.notna(value)
@@ -431,35 +404,23 @@ def main():
 
     pcol1, pcol2, pcol3 = st.columns(3)
 
-    pcol1.metric(
-        "PM2.5",
-        fmt_pollutant(latest["pm25"])
-    )
+    with pcol1:
+        with st.container(border=True):
+            st.metric("PM2.5", fmt_pollutant(latest["pm25"]))
+        with st.container(border=True):
+            st.metric("PM10", fmt_pollutant(latest["pm10"]))
 
-    pcol1.metric(
-        "PM10",
-        fmt_pollutant(latest["pm10"])
-    )
+    with pcol2:
+        with st.container(border=True):
+            st.metric("O3 (Ozone)", fmt_pollutant(latest["o3"]))
+        with st.container(border=True):
+            st.metric("NO2", fmt_pollutant(latest["no2"]))
 
-    pcol2.metric(
-        "O3 (Ozone)",
-        fmt_pollutant(latest["o3"])
-    )
-
-    pcol2.metric(
-        "NO2",
-        fmt_pollutant(latest["no2"])
-    )
-
-    pcol3.metric(
-        "SO2",
-        fmt_pollutant(latest["so2"])
-    )
-
-    pcol3.metric(
-        "CO",
-        fmt_pollutant(latest["co"])
-    )
+    with pcol3:
+        with st.container(border=True):
+            st.metric("SO2", fmt_pollutant(latest["so2"]))
+        with st.container(border=True):
+            st.metric("CO", fmt_pollutant(latest["co"]))
 
     st.caption(
         "This station primarily measures PM2.5. PM10/O3/NO2/SO2/CO show 'N/A' "
@@ -485,20 +446,12 @@ def main():
             X_latest
         )[0]
 
-        forecast_values.append(
-            prediction
-        )
+        forecast_values.append(prediction)
 
-        category, color, text_color = aqi_category(
-            prediction
-        )
+        category, color, text_color = aqi_category(prediction)
 
         with cols[i]:
-
-            st.markdown(
-                f"**{label}**"
-            )
-
+            st.markdown(f"**{label}**")
             st.markdown(
                 f"""
                 <div style='
@@ -527,34 +480,23 @@ def main():
     # SHAP EXPLANATIONS
     # ==========================================================
 
-    st.subheader(
-        "Why these predictions? (SHAP feature importance)"
-    )
+    st.subheader("Why these predictions? (SHAP feature importance)")
 
     background_sample = df[
         FEATURE_COLUMNS
     ].dropna().sample(
         n=min(
             50,
-            len(
-                df.dropna(
-                    subset=FEATURE_COLUMNS
-                )
-            )
+            len(df.dropna(subset=FEATURE_COLUMNS))
         ),
         random_state=42
     )
 
     for label, model in models.items():
 
-        with st.expander(
-            f"{label} -- what drove this prediction?"
-        ):
+        with st.expander(f"{label} -- what drove this prediction?"):
 
-            with st.spinner(
-                "Computing SHAP values..."
-            ):
-
+            with st.spinner("Computing SHAP values..."):
                 explanation = compute_shap_explanation(
                     model,
                     X_latest,
@@ -583,12 +525,9 @@ def main():
     # HAZARD ALERT
     # ==========================================================
 
-    max_forecast = max(
-        forecast_values
-    )
+    max_forecast = max(forecast_values)
 
     if max_forecast > 150:
-
         st.error(
             f"⚠️ HAZARD ALERT: AQI is forecast to reach "
             f"{max_forecast:.0f} "
@@ -596,21 +535,15 @@ def main():
             f"in the next 3 days. "
             f"Consider limiting outdoor activity."
         )
-
     elif max_forecast > 100:
-
         st.warning(
             f"AQI is forecast to reach "
             f"{max_forecast:.0f} "
             f"({aqi_category(max_forecast)[0]}) "
             f"-- sensitive groups should take precautions."
         )
-
     else:
-
-        st.success(
-            "No hazardous AQI levels forecast in the next 3 days."
-        )
+        st.success("No hazardous AQI levels forecast in the next 3 days.")
 
     # ==========================================================
     # RECENT AQI TREND
@@ -618,9 +551,7 @@ def main():
 
     st.subheader("Recent AQI Trend")
 
-    recent = df.dropna(
-        subset=["aqi"]
-    ).tail(72)
+    recent = df.dropna(subset=["aqi"]).tail(72)
 
     st.line_chart(
         recent.set_index("date")["aqi"]
@@ -643,28 +574,19 @@ def main():
     model_rows = []
 
     for label in DAY_MODELS:
-
         info = model_info[label]
-
         metrics = info["metrics"] or {}
 
         model_rows.append(
             {
                 "Forecast Day": label,
-
                 "Algorithm Used":
                     info["description"].split("using ")[-1]
                     if info["description"]
                     else "N/A",
-
-                "MAE":
-                    f"{metrics.get('mae', float('nan')):.2f}",
-
-                "RMSE":
-                    f"{metrics.get('rmse', float('nan')):.2f}",
-
-                "R²":
-                    f"{metrics.get('r2', float('nan')):.3f}",
+                "MAE": f"{metrics.get('mae', float('nan')):.2f}",
+                "RMSE": f"{metrics.get('rmse', float('nan')):.2f}",
+                "R²": f"{metrics.get('r2', float('nan')):.3f}",
             }
         )
 
@@ -674,9 +596,7 @@ def main():
         hide_index=True
     )
 
-    st.caption(
-        f"Last data update: {latest['date']}"
-    )
+    st.caption(f"Last data update: {latest['date']}")
 
 
 if __name__ == "__main__":
