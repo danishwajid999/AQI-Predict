@@ -1,6 +1,6 @@
 """
 Pearls AQI Predictor - Dashboard
-===================================
+==================================
 Loads the 3 day-ahead models from the Hopsworks Model Registry, pulls the
 most recent feature data from the Feature Store, and shows a 3-day AQI
 forecast for Islamabad.
@@ -12,10 +12,12 @@ import os
 
 import joblib
 import pandas as pd
+import plotly.graph_objects as go
 import shap
 import streamlit as st
 import hopsworks
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
@@ -23,8 +25,12 @@ load_dotenv()
 def get_secret(name):
     """Reads a credential from Streamlit Cloud's secrets manager if available,
     otherwise falls back to a local .env file (for local development)."""
-    if name in st.secrets:
-        return st.secrets[name]
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass  # no secrets.toml present (e.g. running locally) -- fall back to .env
+
     return os.getenv(name)
 
 
@@ -35,11 +41,28 @@ FEATURE_GROUP_NAME = "aqi_features"
 FEATURE_GROUP_VERSION = 1
 
 FEATURE_COLUMNS = [
-    "aqi", "pm25", "pm10", "o3", "no2", "so2", "co",
-    "temperature", "humidity", "pressure", "wind",
-    "hour", "day", "month", "day_of_week", "aqi_change_rate",
-    "aqi_lag_24h", "aqi_lag_48h", "aqi_rolling_6h", "aqi_rolling_24h",
+    "aqi",
+    "pm25",
+    "pm10",
+    "o3",
+    "no2",
+    "so2",
+    "co",
+    "temperature",
+    "humidity",
+    "pressure",
+    "wind",
+    "hour",
+    "day",
+    "month",
+    "day_of_week",
+    "aqi_change_rate",
+    "aqi_lag_24h",
+    "aqi_lag_48h",
+    "aqi_rolling_6h",
+    "aqi_rolling_24h",
 ]
+
 
 DAY_MODELS = {
     "Day 1 (tomorrow)": "aqi_predictor_day_1",
@@ -52,14 +75,19 @@ def aqi_category(aqi):
     """Standard EPA AQI category + background color + a readable text color for it."""
     if aqi <= 50:
         return "Good", "#00e400", "#003d00"
+
     elif aqi <= 100:
         return "Moderate", "#ffff00", "#4d4d00"
+
     elif aqi <= 150:
         return "Unhealthy for Sensitive Groups", "#ff7e00", "#ffffff"
+
     elif aqi <= 200:
         return "Unhealthy", "#ff0000", "#ffffff"
+
     elif aqi <= 300:
         return "Very Unhealthy", "#8f3f97", "#ffffff"
+
     else:
         return "Hazardous", "#7e0023", "#ffffff"
 
@@ -72,15 +100,22 @@ def connect():
         port=443,
         api_key_value=HOPSWORKS_API_KEY,
     )
+
     return project
 
 
-@st.cache_data(ttl=3600)  # re-fetch at most once an hour, since underlying data only updates every 3 hours now
+@st.cache_data(ttl=3600)
 def load_latest_features(_project):
     """Pulls all feature rows and engineers the same trend features used in training."""
     fs = _project.get_feature_store()
-    fg = fs.get_feature_group(name=FEATURE_GROUP_NAME, version=FEATURE_GROUP_VERSION)
+
+    fg = fs.get_feature_group(
+        name=FEATURE_GROUP_NAME,
+        version=FEATURE_GROUP_VERSION
+    )
+
     df = fg.read()
+
     df = df.sort_values("date").reset_index(drop=True)
 
     df["aqi_lag_24h"] = df["aqi"].shift(24)
@@ -88,27 +123,46 @@ def load_latest_features(_project):
     df["aqi_rolling_6h"] = df["aqi"].rolling(window=6).mean()
     df["aqi_rolling_24h"] = df["aqi"].rolling(window=24).mean()
 
-    # Live rows (AQICN) only measure PM2.5 -- o3/no2/so2/co are always
-    # missing. Fill them instead of dropping the row, so the dashboard
-    # doesn't silently fall back to an old backfilled row when picking
-    # the "latest" data point.
-    for col in ["o3", "no2", "so2", "co", "pm10"]:
-        df[col] = df[col].fillna(0)
+    # NOTE: pollutant NaNs (o3/no2/so2/co, missing on live-only rows) are
+    # deliberately NOT filled here -- we keep the real missing-vs-recorded
+    # distinction for display, and only fill with 0 later, right before
+    # feeding a specific row into a model for prediction.
 
     return df
 
 
 @st.cache_resource
 def load_models(_project):
-    """Downloads and loads all 3 day-ahead models from the Model Registry."""
+    """Downloads and loads all 3 day-ahead models, plus their saved metadata
+    (which algorithm won, and its real evaluation metrics) from training time."""
+
     mr = _project.get_model_registry()
+
     models = {}
+    model_info = {}
+
     for label, registry_name in DAY_MODELS.items():
-        model_meta = mr.get_best_model(registry_name, "rmse", "min")
+
+        model_meta = mr.get_best_model(
+            registry_name,
+            "rmse",
+            "min"
+        )
+
         model_dir = model_meta.download()
-        model = joblib.load(os.path.join(model_dir, "model.pkl"))
+
+        model = joblib.load(
+            os.path.join(model_dir, "model.pkl")
+        )
+
         models[label] = model
-    return models
+
+        model_info[label] = {
+            "description": model_meta.description,
+            "metrics": model_meta.training_metrics,
+        }
+
+    return models, model_info
 
 
 def compute_shap_explanation(model, X_row, background_df):
@@ -118,88 +172,406 @@ def compute_shap_explanation(model, X_row, background_df):
     models (Ridge) -- shap.Explainer automatically picks the right
     algorithm for each.
     """
+
     try:
-        explainer = shap.Explainer(model, background_df)
+        explainer = shap.Explainer(
+            model,
+            background_df
+        )
+
         shap_values = explainer(X_row)
+
     except Exception:
+
         # Fallback for model types the fast path doesn't support directly
-        explainer = shap.Explainer(model.predict, background_df)
+        explainer = shap.Explainer(
+            model.predict,
+            background_df
+        )
+
         shap_values = explainer(X_row)
 
     values = shap_values.values[0]
-    result = pd.DataFrame({"feature": FEATURE_COLUMNS, "impact": values})
+
+    result = pd.DataFrame(
+        {
+            "feature": FEATURE_COLUMNS,
+            "impact": values
+        }
+    )
+
     result["abs_impact"] = result["impact"].abs()
-    return result.sort_values("abs_impact", ascending=False).head(6)
+
+    return result.sort_values(
+        "abs_impact",
+        ascending=False
+    ).head(6)
+
+def render_aqi_gauge(aqi_value):
+    """Builds a compact gauge meter for the current AQI."""
+
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=aqi_value,
+
+            number={
+                "suffix": " AQI",
+                "font": {
+                    "size": 30
+                }
+            },
+
+            gauge={
+                "axis": {
+                    "range": [0, 500],
+                    "tickwidth": 1,
+                    "tickfont": {
+                        "size": 9
+                    }
+                },
+
+                "bar": {
+                    "color": "black",
+                    "thickness": 0.25
+                },
+
+                "steps": [
+                    {
+                        "range": [0, 50],
+                        "color": "#00e400"
+                    },
+                    {
+                        "range": [50, 100],
+                        "color": "#ffff00"
+                    },
+                    {
+                        "range": [100, 150],
+                        "color": "#ff7e00"
+                    },
+                    {
+                        "range": [150, 200],
+                        "color": "#ff0000"
+                    },
+                    {
+                        "range": [200, 300],
+                        "color": "#8f3f97"
+                    },
+                    {
+                        "range": [300, 500],
+                        "color": "#7e0023"
+                    },
+                ],
+            },
+        )
+    )
+
+    # Extra space around the gauge so ALL labels are visible
+    fig.update_layout(
+        height=190,
+        margin=dict(
+            l=10,
+            r=10,
+            t=25,
+            b=15
+        )
+    )
+
+    return fig
 
 
 def main():
-    st.set_page_config(page_title="Pearls AQI Predictor - Islamabad", page_icon="🌫️", layout="wide")
+
+    st.set_page_config(
+        page_title="Pearls AQI Predictor - Islamabad",
+        page_icon="🌫️",
+        layout="wide"
+    )
+
     st.title("🌫️ Pearls AQI Predictor")
-    st.caption("3-day Air Quality Index forecast for Islamabad")
+
+    st.caption(
+        "3-day Air Quality Index forecast for Islamabad"
+    )
 
     with st.spinner("Connecting to Hopsworks..."):
         project = connect()
 
     with st.spinner("Loading latest data and models..."):
         df = load_latest_features(project)
-        models = load_models(project)
+        models, model_info = load_models(project)
 
-    latest = df.dropna(subset=FEATURE_COLUMNS).iloc[-1]
-    X_latest = pd.DataFrame([latest[FEATURE_COLUMNS]])
+    # Columns that are ALWAYS present, live or backfilled -- used to find
+    # the true latest row without pollutant NaNs (o3/no2/so2/co) causing
+    # live rows to be silently skipped.
+
+    essential_cols = [
+        "aqi",
+        "pm25",
+        "temperature",
+        "humidity",
+        "pressure",
+        "wind",
+        "hour",
+        "day",
+        "month",
+        "day_of_week",
+        "aqi_change_rate",
+        "aqi_lag_24h",
+        "aqi_lag_48h",
+        "aqi_rolling_6h",
+        "aqi_rolling_24h",
+    ]
+
+    latest = df.dropna(
+        subset=essential_cols
+    ).iloc[-1]
+
+    # Build the model input separately: fill missing pollutants with 0
+    # only here, right before prediction -- the display below still uses
+    # the real (possibly missing) values from `latest`.
+
+    model_input = latest[FEATURE_COLUMNS].copy()
+
+    model_input[
+        ["o3", "no2", "so2", "co", "pm10"]
+    ] = model_input[
+        ["o3", "no2", "so2", "co", "pm10"]
+    ].fillna(0)
+
+    X_latest = pd.DataFrame(
+        [model_input]
+    )
 
     current_aqi = latest["aqi"]
-    current_category, current_color, current_text_color = aqi_category(current_aqi)
 
-    # --- Current conditions ---
+    current_category, current_color, current_text_color = aqi_category(
+        current_aqi
+    )
+
+    # ==========================================================
+    # CURRENT CONDITIONS
+    # ==========================================================
+
     st.subheader("Current Conditions")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Current AQI", f"{current_aqi:.0f}", current_category)
-    col2.metric("Temperature", f"{latest['temperature']:.0f} C")
-    col3.metric("Humidity", f"{latest['humidity']:.0f}%")
+
+    # Four columns instead of three.
+    #
+    # Current AQI | Gauge | Temperature | Humidity
+    #
+    # The gauge is now beside the Current AQI metric.
+
+    col1, col2, col3, col4 = st.columns(
+        [1, 1.4, 1, 1]
+    )
+
+    with col1:
+
+        st.metric(
+            "Current AQI",
+            f"{current_aqi:.0f}",
+            current_category
+        )
+
+    with col2:
+
+        st.plotly_chart(
+            render_aqi_gauge(current_aqi),
+            use_container_width=True,
+            config={
+                "displayModeBar": False
+            }
+        )
+
+    with col3:
+
+        st.metric(
+            "Temperature",
+            f"{latest['temperature']:.0f} C"
+        )
+
+    with col4:
+
+        st.metric(
+            "Humidity",
+            f"{latest['humidity']:.0f}%"
+        )
+
+    # AQI category banner
 
     st.markdown(
-        f"<div style='background-color:{current_color}; padding:10px; "
-        f"border-radius:8px; text-align:center; font-weight:bold; color:{current_text_color};'>"
-        f"{current_category}</div>",
-        unsafe_allow_html=True,
+        f"""
+        <div style='
+            background-color:{current_color};
+            padding:10px;
+            border-radius:8px;
+            text-align:center;
+            font-weight:bold;
+            color:{current_text_color};
+        '>
+            {current_category}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # ==========================================================
+    # POLLUTANT READINGS
+    # ==========================================================
+
+    st.subheader("Pollutant Levels")
+
+    def fmt_pollutant(value):
+
+        return (
+            f"{value:.0f}"
+            if pd.notna(value)
+            else "N/A (not measured by this station)"
+        )
+
+    pcol1, pcol2, pcol3 = st.columns(3)
+
+    pcol1.metric(
+        "PM2.5",
+        fmt_pollutant(latest["pm25"])
+    )
+
+    pcol1.metric(
+        "PM10",
+        fmt_pollutant(latest["pm10"])
+    )
+
+    pcol2.metric(
+        "O3 (Ozone)",
+        fmt_pollutant(latest["o3"])
+    )
+
+    pcol2.metric(
+        "NO2",
+        fmt_pollutant(latest["no2"])
+    )
+
+    pcol3.metric(
+        "SO2",
+        fmt_pollutant(latest["so2"])
+    )
+
+    pcol3.metric(
+        "CO",
+        fmt_pollutant(latest["co"])
+    )
+
+    st.caption(
+        "This station primarily measures PM2.5. PM10/O3/NO2/SO2/CO show 'N/A' "
+        "for live readings the station doesn't record, and are treated as 0 "
+        "internally when fed into the models."
     )
 
     st.divider()
 
-    # --- 3-day forecast ---
+    # ==========================================================
+    # 3-DAY FORECAST
+    # ==========================================================
+
     st.subheader("3-Day Forecast")
+
     cols = st.columns(3)
+
     forecast_values = []
 
     for i, (label, model) in enumerate(models.items()):
-        prediction = model.predict(X_latest)[0]
-        forecast_values.append(prediction)
-        category, color, text_color = aqi_category(prediction)
+
+        prediction = model.predict(
+            X_latest
+        )[0]
+
+        forecast_values.append(
+            prediction
+        )
+
+        category, color, text_color = aqi_category(
+            prediction
+        )
 
         with cols[i]:
-            st.markdown(f"**{label}**")
+
             st.markdown(
-                f"<div style='background-color:{color}; padding:20px; "
-                f"border-radius:8px; text-align:center; color:{text_color};'>"
-                f"<span style='font-size:32px; font-weight:bold;'>{prediction:.0f}</span><br>"
-                f"{category}</div>",
-                unsafe_allow_html=True,
+                f"**{label}**"
+            )
+
+            st.markdown(
+                f"""
+                <div style='
+                    background-color:{color};
+                    padding:20px;
+                    border-radius:8px;
+                    text-align:center;
+                    color:{text_color};
+                '>
+                    <span style='
+                        font-size:32px;
+                        font-weight:bold;
+                    '>
+                        {prediction:.0f}
+                    </span>
+                    <br>
+                    {category}
+                </div>
+                """,
+                unsafe_allow_html=True
             )
 
     st.divider()
 
-    # --- SHAP explanations: why did the model predict this? ---
-    st.subheader("Why these predictions? (SHAP feature importance)")
-    background_sample = df[FEATURE_COLUMNS].dropna().sample(
-        n=min(50, len(df.dropna(subset=FEATURE_COLUMNS))), random_state=42
+    # ==========================================================
+    # SHAP EXPLANATIONS
+    # ==========================================================
+
+    st.subheader(
+        "Why these predictions? (SHAP feature importance)"
+    )
+
+    background_sample = df[
+        FEATURE_COLUMNS
+    ].dropna().sample(
+        n=min(
+            50,
+            len(
+                df.dropna(
+                    subset=FEATURE_COLUMNS
+                )
+            )
+        ),
+        random_state=42
     )
 
     for label, model in models.items():
-        with st.expander(f"{label} -- what drove this prediction?"):
-            with st.spinner("Computing SHAP values..."):
-                explanation = compute_shap_explanation(model, X_latest, background_sample)
-            explanation_display = explanation.set_index("feature")["impact"]
-            st.bar_chart(explanation_display)
+
+        with st.expander(
+            f"{label} -- what drove this prediction?"
+        ):
+
+            with st.spinner(
+                "Computing SHAP values..."
+            ):
+
+                explanation = compute_shap_explanation(
+                    model,
+                    X_latest,
+                    background_sample
+                )
+
+            explanation_display = (
+                explanation
+                .set_index("feature")["impact"]
+                .sort_values()
+            )
+
+            st.bar_chart(
+                explanation_display,
+                horizontal=True
+            )
+
             st.caption(
                 "Positive bars pushed the predicted AQI up; negative bars pulled it down. "
                 "Only the top 6 most influential features are shown."
@@ -207,28 +579,104 @@ def main():
 
     st.divider()
 
-    # --- Hazard alert ---
-    max_forecast = max(forecast_values)
+    # ==========================================================
+    # HAZARD ALERT
+    # ==========================================================
+
+    max_forecast = max(
+        forecast_values
+    )
+
     if max_forecast > 150:
+
         st.error(
-            f"⚠️ HAZARD ALERT: AQI is forecast to reach {max_forecast:.0f} "
-            f"({aqi_category(max_forecast)[0]}) in the next 3 days. "
+            f"⚠️ HAZARD ALERT: AQI is forecast to reach "
+            f"{max_forecast:.0f} "
+            f"({aqi_category(max_forecast)[0]}) "
+            f"in the next 3 days. "
             f"Consider limiting outdoor activity."
         )
+
     elif max_forecast > 100:
+
         st.warning(
-            f"AQI is forecast to reach {max_forecast:.0f} "
-            f"({aqi_category(max_forecast)[0]}) -- sensitive groups should take precautions."
+            f"AQI is forecast to reach "
+            f"{max_forecast:.0f} "
+            f"({aqi_category(max_forecast)[0]}) "
+            f"-- sensitive groups should take precautions."
         )
+
     else:
-        st.success("No hazardous AQI levels forecast in the next 3 days.")
 
-    # --- Recent trend chart ---
+        st.success(
+            "No hazardous AQI levels forecast in the next 3 days."
+        )
+
+    # ==========================================================
+    # RECENT AQI TREND
+    # ==========================================================
+
     st.subheader("Recent AQI Trend")
-    recent = df.dropna(subset=["aqi"]).tail(72)
-    st.line_chart(recent.set_index("date")["aqi"])
 
-    st.caption(f"Last data update: {latest['date']}")
+    recent = df.dropna(
+        subset=["aqi"]
+    ).tail(72)
+
+    st.line_chart(
+        recent.set_index("date")["aqi"]
+    )
+
+    st.divider()
+
+    # ==========================================================
+    # MODEL DETAILS
+    # ==========================================================
+
+    st.subheader("Model Details")
+
+    st.caption(
+        "Two model types were trained and compared for each forecast day: "
+        "Ridge Regression and Random Forest. The better-performing one "
+        "(by RMSE on held-out test data) was selected and deployed here."
+    )
+
+    model_rows = []
+
+    for label in DAY_MODELS:
+
+        info = model_info[label]
+
+        metrics = info["metrics"] or {}
+
+        model_rows.append(
+            {
+                "Forecast Day": label,
+
+                "Algorithm Used":
+                    info["description"].split("using ")[-1]
+                    if info["description"]
+                    else "N/A",
+
+                "MAE":
+                    f"{metrics.get('mae', float('nan')):.2f}",
+
+                "RMSE":
+                    f"{metrics.get('rmse', float('nan')):.2f}",
+
+                "R²":
+                    f"{metrics.get('r2', float('nan')):.3f}",
+            }
+        )
+
+    st.dataframe(
+        pd.DataFrame(model_rows),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.caption(
+        f"Last data update: {latest['date']}"
+    )
 
 
 if __name__ == "__main__":

@@ -8,3 +8,4 @@ pyarrow
 confluent-kafka
 streamlit
 shap
+plotly
